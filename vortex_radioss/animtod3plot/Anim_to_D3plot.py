@@ -54,7 +54,7 @@ class convert:
         n4      = node_coordinates[shell_node_indexes][:,3]      
         ux      = n1[:,0] - n3[:,0]; uy = n1[:,1] - n3[:,1]; uz = n1[:,2] - n3[:,2]
         vx      = n4[:,0] - n2[:,0]; vy = n4[:,1] - n2[:,1]; vz = n4[:,2] - n2[:,2]        
-        i       = uy*vz - uz*vy; j = uz*vx - ux*vz; k = ux*vy - uy*vx;
+        i       = uy*vz - uz*vy; j = uz*vx - ux*vz; k = ux*vy - uy*vx
         area    = np.sqrt((i*i)+(j*j)+(k*k))*0.5
         mass    = area * shell_thicknesses * shell_densities * shell_is_alive                     
         _       = np.bincount(shell_part_indexes, mass, minlength = n_parts)        
@@ -115,6 +115,27 @@ class convert:
         return out
     
     @staticmethod
+    def element_shell_strain(*data):
+        #same as element shell stress
+        
+        shell_num      = len(data[0])
+        nip            = data[2][0] 
+        
+        out            = np.zeros(shape=(shell_num, nip, 6))              
+        
+        # Top integration point
+        out[:, -1, 0]   = data[0][:, 0]
+        out[:, -1, 1]   = data[0][:, 1]
+        out[:, -1, 3]   = data[0][:, 2]
+            
+        # Bottom integration point
+        out[:, 0, 0]   = data[1][:, 0]
+        out[:, 0, 1]   = data[1][:, 1]
+        out[:, 0, 3]   = data[1][:, 2]
+        
+        return out
+    
+    @staticmethod
     def element_shell_effective_plastic_strain(*data):
         
         # Mid-surface stresses if present are not converted
@@ -132,8 +153,48 @@ class convert:
         # Bottom integration point
         out[:, 0]    = data[1]
         
+        return out 
+      
+    @staticmethod 
+    def element_shell_history_vars(*data):
+
+        shell_num = len(data[0])
+        nip = data[2][0]   
+
+        out = np.zeros(shape=(shell_num, nip, 1))
+
+        # Top integration point
+        out[:, -1, 0] = data[0]
+
+        # Bottom integration point
+        out[:, 0, 0]   = data[1]
+
         return out    
-                
+
+    @staticmethod
+    def element_solid_stress(*data):
+        solid_num = len(data[0]) 
+        nip = data[1][0]      #Number of integration points (nip_solid)
+        out = np.zeros((solid_num, nip, 6)) 
+        out[:, 0, :] = data[0]  
+        print
+        return out
+    
+    @staticmethod
+    def element_solid_strain(*data):
+        """
+        Problem:
+            Input strain data has shape (n_solids, 6), but D3plot expects (n_solids, nip_solid, 6)
+
+        Solution:
+            Add an extra dimension for the integration points. 
+        """
+        solid_num      = len(data[0]) 
+        nip = data[1][0]  
+        out = np.zeros((solid_num, nip, 6)) 
+        out[:, 0, :] = data[0]
+        return out
+    
 class readAndConvert:
     
     def __init__(
@@ -261,6 +322,12 @@ class readAndConvert:
         
         n_shell = 0
         nip_shell = 2
+
+        nip_solid = 1   # Number of integration points per solid element (NIP). 
+                        # This value should be either 1 or 8, depending on the model configuration. 
+                        # However, when the model uses 8 integration points, the solver currently 
+                        # provides the average value instead of individual data points.
+
         allowable_part_strings = ["_rigid_wall_",  ": RIGIDWALL_"]
         if rr.raw_header["nbFacets"] > 0:
              
@@ -559,10 +626,12 @@ class readAndConvert:
                     database_extent_binary[flag][0] = _[0] + [ArrayType.element_shell_is_alive]  
                     database_extent_binary[flag][0] = _[0] + [ArrayType.element_shell_stress]    
                     database_extent_binary[flag][0] = _[0] + [ArrayType.element_shell_effective_plastic_strain]
-                    
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_shell_history_vars]
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_shell_strain]
+
                     database_extent_binary[flag][1] = _[0] + [ArrayType.element_shell_thickness]        
                     database_extent_binary[flag][1] = _[1] + [ArrayType.element_shell_internal_energy]                        
-                    
+
                     # Dyna output
                     array_requirements[ArrayType.element_shell_thickness] = {}
                     _ = array_requirements[ArrayType.element_shell_thickness]
@@ -602,6 +671,16 @@ class readAndConvert:
                     _["convert"]        = convert.element_shell_stress
                     _["tracker"]        = shell_ids_tracker
                     _["additional"]     = [nip_shell]
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_shell_strain] = {}
+                    _ = array_requirements[ArrayType.element_shell_strain]
+                    # Radioss outputs needed to comptute Dyna output
+                    _["dependents"]     = ["Strain (upper)","Strain (lower)"]
+                    _["shape"]          = (1,n_shell, nip_shell, 6)
+                    _["convert"]        = convert.element_shell_strain
+                    _["tracker"]        = shell_ids_tracker
+                    _["additional"]     = [nip_shell]
                     
                    # Dyna output
                     array_requirements[ArrayType.element_shell_effective_plastic_strain] = {}
@@ -612,7 +691,122 @@ class readAndConvert:
                     _["convert"]        = convert.element_shell_effective_plastic_strain
                     _["tracker"]        = shell_ids_tracker  
                     _["additional"]     = [nip_shell]
-                   
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_shell_history_vars] = {}
+                    _ = array_requirements[ArrayType.element_shell_history_vars]
+                    # Radioss outputs needed to comptute Dyna output
+                    _["dependents"] = ["element_shell_damage,(layer___1)__", "element_shell_damage,(layer___5)__"]
+                    _["shape"] = (1, n_shell, nip_shell, 1)
+                    _["convert"] = convert.element_shell_history_vars
+                    _["tracker"] = shell_ids_tracker
+                    _["additional"] = [nip_shell]
+
+                 
+                if rr.raw_header["nbElts3D"] > 0:
+
+                    flag = "SOLIDS"
+
+                    n_solids = rr.raw_header["nbElts3D"]   
+                    n_states=1
+
+                    database_extent_binary[flag] = {}      
+                    _ = database_extent_binary[flag]
+
+                    database_extent_binary[flag][0] = []
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_is_alive]
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_history_variables]
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_stress] 
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_effective_plastic_strain]
+                    database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_strain] 
+
+                    #database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_thermal_data]
+                    # This method cannot be converted — the data seems to be already in the correct format.
+                    # -> If a conversion method like convert.element_solid_thermal_data is applied, it is ignored 
+                    # However, if this line is active when loading the result in HyperView or Ls-Prepost, it completely breaks the simulation
+
+                    #database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_plastic_strain_tensor] 
+                    #database_extent_binary[flag][0] = _[0] + [ArrayType.element_solid_thermal_strain_tensor]  
+                    # These lines create new result fields that are not originally present in the output from the Dyna solver.
+                    # In LS-Prepost, under the FEM > Post > Fringe component > Strain tab,
+                    # additional fields such as "thermal" and "plastic strain" appear
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_is_alive] = {}
+                    _ = array_requirements[ArrayType.element_solid_is_alive]
+                    # Radioss outputs needed to compute Dyna output
+                    _["dependents"]     = ["element_solid_is_alive"]
+                    _["shape"]          = (1,n_solids)
+                    _["convert"]        = None
+                    _["tracker"]        = solid_ids_tracker
+                    _["additional"]     = []
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_history_variables] = {}
+                    _ = array_requirements[ArrayType.element_solid_history_variables]
+                    # Radioss outputs needed to compute Dyna output
+                    _["dependents"] = ["element_solid_max_damage_element"]
+                    _["shape"] = (n_states, n_solids, nip_solid,1)
+                    _["convert"] = None
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = [nip_solid]
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_stress] = {}
+                    _ = array_requirements[ArrayType.element_solid_stress]
+                    _["dependents"] = ["element_solid_stress"]
+                    _["shape"] = (n_states, n_solids, nip_solid, 6) 
+                    _["convert"] = convert.element_solid_stress
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = [nip_solid] 
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_effective_plastic_strain] = {}
+                    _ = array_requirements[ArrayType.element_solid_effective_plastic_strain]
+                    _["dependents"] = ["element_solid_effective_plastic_strain"]
+                    _["shape"] = (n_states, n_solids, nip_solid)  
+                    _["convert"] = None
+                    _["tracker"] = solid_ids_tracker  
+                    _["additional"] = [nip_solid]  
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_strain] = {}
+                    _ = array_requirements[ArrayType.element_solid_strain]
+                    _["dependents"] = ["element_solid_strain"]
+                    _["shape"] = (n_states, n_solids, nip_solid, 6) 
+                    _["convert"] = convert.element_solid_strain
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = [nip_solid] 
+
+                    # Dyna output
+                    n_solids_thermal_vars = 1
+                    array_requirements[ArrayType.element_solid_thermal_data] = {}
+                    _ = array_requirements[ArrayType.element_solid_thermal_data]
+                    _["dependents"] = ["element_solid_thermal_data"]
+                    _["shape"] = (n_states, n_solids, n_solids_thermal_vars)
+                    _["convert"] = None
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = []
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_plastic_strain_tensor] = {}
+                    _ = array_requirements[ArrayType.element_solid_plastic_strain_tensor]
+                    _["dependents"] = ["element_solid_plastic_strain_tensor"]
+                    _["shape"] = (n_states, n_solids, nip_solid, 6)
+                    _["convert"] = None
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = []
+
+                    # Dyna output
+                    array_requirements[ArrayType.element_solid_thermal_strain_tensor] = {}
+                    _ = array_requirements[ArrayType.element_solid_thermal_strain_tensor]
+                    _["dependents"] = ["element_solid_thermal_strain_tensor"]
+                    _["shape"] = (n_states, n_solids, nip_solid, 6)
+                    _["convert"] = None
+                    _["tracker"] = solid_ids_tracker
+                    _["additional"] = []
+
+
                 flag = "PARTS"
                 
                 database_extent_binary[flag] = {}      
@@ -723,7 +917,7 @@ class readAndConvert:
                 
             _ = file_stem + ".d3plot" + str(d3plot_index).zfill(padding)
             os.rename(temp_d3plot_name + "01", _)        
-                                                 
+
         return True
         
 if __name__ == '__main__':   
